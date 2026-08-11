@@ -1,6 +1,76 @@
-import * as XLSX from 'xlsx';import {identifyLine,parseDate,parseMoney,representativeFor,type Representative,type Stock} from './domain';
-const aliases:Record<string,string>={'produto':'codigoProduto','descricao do produto':'descricaoProduto','descrição do produto':'descricaoProduto','marca':'marca','topico':'topico','tópico':'topico','tipo':'tipo','registro anvisa':'registroAnvisa','lote fabricante':'loteFabricante','validade':'dataValidade','quantidade':'quantidade','lt.interno':'loteInterno','lote interno':'loteInterno','local':'local','dt.conf.estoque':'dataConferenciaEstoque','vr.compra do lote':'valorCompraLote','vr.do custo medio atual':'custoMedioAtual','vr. ultima compra':'valorUltimaCompra'};
-const key=(s:string)=>s.trim().toLowerCase().replace(/\s+/g,' ');const text=(v:unknown)=>String(v??'').replace(/^'/,'').trim();
-export type Preview={fileName:string;columns:string[];valid:Stock[];invalid:{row:number;reasons:string[]}[];duplicates:number;total:number};
-export async function parseFile(file:File,reps:Representative[]):Promise<Preview>{const data=await file.arrayBuffer();const wb=XLSX.read(data,{type:'array',cellDates:true,codepage:65001});const ws=wb.Sheets[wb.SheetNames[0]];const raw=XLSX.utils.sheet_to_json<Record<string,unknown>>(ws,{defval:''});const columns=(XLSX.utils.sheet_to_json<unknown[]>(ws,{header:1,defval:''})[0]||[]).map(String).filter((c,i,a)=>c.trim()&&raw.some(r=>text(r[a[i]])));return normalizeRows(raw,reps,file.name,columns)}
-export function normalizeRows(raw:Record<string,unknown>[],reps:Representative[],fileName='base.csv',columns=Object.keys(raw[0]||{})):Preview{const valid:Stock[]=[];const invalid:Preview['invalid']=[];const seen=new Set<string>();let duplicates=0;raw.forEach((source,index)=>{const r:Record<string,unknown>={};Object.entries(source).forEach(([h,v])=>{const a=aliases[key(h)];if(a)r[a]=v});const marca=text(r.marca);const match=marca.match(/^(\d+)\s*[-–]\s*(.+)$/);const linha=identifyLine(r.topico,r.tipo,r.marca,r.descricaoProduto);const stock:Stock={id:'',codigoProduto:text(r.codigoProduto),descricaoProduto:text(r.descricaoProduto),marca,marcaCodigo:match?.[1]||'',marcaNome:match?.[2]||marca,topico:text(r.topico),tipo:text(r.tipo),registroAnvisa:text(r.registroAnvisa),loteFabricante:text(r.loteFabricante),loteInterno:text(r.loteInterno),dataValidade:parseDate(r.dataValidade),quantidade:parseMoney(r.quantidade),local:text(r.local),dataConferenciaEstoque:parseDate(r.dataConferenciaEstoque),valorCompraLote:parseMoney(r.valorCompraLote)||0,custoMedioAtual:parseMoney(r.custoMedioAtual),valorUltimaCompra:parseMoney(r.valorUltimaCompra)||0,linha,representante:representativeFor(linha,reps),original:source};stock.id=[stock.codigoProduto,stock.loteFabricante,stock.loteInterno,stock.dataValidade,stock.local].join('|');const reasons=[];if(!stock.codigoProduto)reasons.push('Produto sem código');if(!stock.dataValidade)reasons.push('Validade inexistente ou inválida');if(!Number.isFinite(stock.quantidade)||stock.quantidade<0)reasons.push('Quantidade inválida');if(!Number.isFinite(stock.custoMedioAtual)||stock.custoMedioAtual<0)reasons.push('Custo inválido');if(seen.has(stock.id)){duplicates++;reasons.push('Possível duplicidade')}seen.add(stock.id);if(reasons.length)invalid.push({row:index+2,reasons});else valid.push(stock)});return{fileName,columns,valid,invalid,duplicates,total:raw.length}}
+import * as XLSX from 'xlsx';
+import { normalizeLine, normalizeState, normalizeText, parseDate, parseMoney, resolveRepresentative, type Representative, type Stock, type StockOrigin } from './domain';
+
+const aliases: Record<string, keyof Stock> = {
+  'produto': 'codigoProduto', 'codigo do produto': 'codigoProduto', 'código do produto': 'codigoProduto',
+  'descricao do produto': 'descricaoProduto', 'descrição do produto': 'descricaoProduto',
+  'marca': 'marca', 'topico': 'topico', 'tópico': 'topico', 'tipo': 'tipo',
+  'linha': 'linha', 'linha de produto': 'linha', 'unidade de negocio': 'linha', 'unidade de negócio': 'linha',
+  'registro anvisa': 'registroAnvisa', 'lote fabricante': 'loteFabricante', 'validade': 'dataValidade',
+  'quantidade': 'quantidade', 'lt.interno': 'loteInterno', 'lote interno': 'loteInterno', 'local': 'local',
+  'dt.conf.estoque': 'dataConferenciaEstoque', 'vr.compra do lote': 'valorCompraLote',
+  'vr.do custo medio atual': 'custoMedioAtual', 'vr.do custo médio atual': 'custoMedioAtual', 'vr. ultima compra': 'valorUltimaCompra',
+  'tipo documento': 'tipoDocumento', 'tipo de documento': 'tipoDocumento',
+  'cliente': 'nomeCliente', 'nome do cliente': 'nomeCliente', 'razao social': 'nomeCliente', 'razão social': 'nomeCliente', 'hospital': 'nomeCliente',
+  'cidade': 'cidadeCliente', 'cidade do cliente': 'cidadeCliente', 'municipio': 'cidadeCliente', 'município': 'cidadeCliente',
+  'estado': 'estadoCliente', 'estado do cliente': 'estadoCliente', 'uf': 'estadoCliente',
+};
+const headerKey = (header: string) => header.trim().toLowerCase().replace(/\s+/g, ' ');
+
+export type InvalidRow = { row: number; reasons: string[] };
+export type Preview = { fileName: string; origin: StockOrigin; columns: string[]; valid: Stock[]; invalid: InvalidRow[]; duplicates: number; total: number };
+
+export async function parseFile(file: File, representatives: Representative[], origin: StockOrigin): Promise<Preview> {
+  const data = await file.arrayBuffer();
+  const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
+  const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' });
+  const headerRow = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: '' })[0] || [];
+  const columns = headerRow.map(String).filter((column) => column.trim() && raw.some((row) => normalizeText(row[column])));
+  return normalizeRows(raw, representatives, origin, file.name, columns);
+}
+
+export function normalizeRows(raw: Record<string, unknown>[], representatives: Representative[], origin: StockOrigin = 'INTERNO', fileName = 'base.csv', columns = Object.keys(raw[0] || {})): Preview {
+  const valid: Stock[] = [];
+  const invalid: InvalidRow[] = [];
+  const seen = new Set<string>();
+  let duplicates = 0;
+  raw.forEach((source, index) => {
+    const row: Partial<Record<keyof Stock, unknown>> = {};
+    Object.entries(source).forEach(([header, fieldValue]) => { const alias = aliases[headerKey(header)]; if (alias) row[alias] = fieldValue; });
+    const marca = normalizeText(row.marca);
+    const marcaMatch = marca.match(/^(\d+)\s*[-–]\s*(.+)$/);
+    const marcaCodigo = marcaMatch?.[1] || '';
+    const marcaNome = normalizeText(marcaMatch?.[2] || marca).toUpperCase();
+    const line = normalizeLine(row.linha, row.topico, row.tipo, row.marca, row.descricaoProduto);
+    const base = {
+      origemEstoque: origin,
+      linha: line.linha,
+      linhaCodigo: line.linhaCodigo,
+      marcaNome,
+      cidadeCliente: normalizeText(row.cidadeCliente),
+      estadoCliente: normalizeState(row.estadoCliente),
+    };
+    const resolution = resolveRepresentative(base, representatives);
+    const stock: Stock = {
+      id: '', ...base, ...resolution, linhaNome: line.linhaNome,
+      codigoProduto: normalizeText(row.codigoProduto), descricaoProduto: normalizeText(row.descricaoProduto),
+      marca, marcaCodigo, topico: normalizeText(row.topico), tipo: normalizeText(row.tipo),
+      registroAnvisa: normalizeText(row.registroAnvisa), loteFabricante: normalizeText(row.loteFabricante), loteInterno: normalizeText(row.loteInterno),
+      dataValidade: parseDate(row.dataValidade), quantidade: parseMoney(row.quantidade), local: normalizeText(row.local),
+      dataConferenciaEstoque: parseDate(row.dataConferenciaEstoque), valorCompraLote: parseMoney(row.valorCompraLote) || 0,
+      custoMedioAtual: parseMoney(row.custoMedioAtual), valorUltimaCompra: parseMoney(row.valorUltimaCompra) || 0,
+      tipoDocumento: normalizeText(row.tipoDocumento), nomeCliente: normalizeText(row.nomeCliente), original: source,
+    };
+    stock.id = [origin, stock.codigoProduto, stock.loteFabricante, stock.loteInterno, stock.dataValidade, origin === 'CONSIGNADO' ? stock.nomeCliente : '', origin === 'CONSIGNADO' ? stock.local : ''].join('|');
+    const reasons: string[] = [];
+    if (!stock.codigoProduto) reasons.push('Produto sem código');
+    if (!stock.dataValidade) reasons.push('Validade inexistente ou inválida');
+    if (!Number.isFinite(stock.quantidade) || stock.quantidade < 0) reasons.push('Quantidade inválida');
+    if (!Number.isFinite(stock.custoMedioAtual) || stock.custoMedioAtual < 0) reasons.push('Custo inválido');
+    if (seen.has(stock.id)) { duplicates += 1; reasons.push('Possível duplicidade'); }
+    seen.add(stock.id);
+    if (reasons.length) invalid.push({ row: index + 2, reasons }); else valid.push(stock);
+  });
+  return { fileName, origin, columns, valid, invalid, duplicates, total: raw.length };
+}
