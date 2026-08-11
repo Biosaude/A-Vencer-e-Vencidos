@@ -1,0 +1,7 @@
+import {initialRepresentatives,type Representative,type Stock,type Treatment} from './domain';
+export type ImportLog={id:string;fileName:string;date:string;records:number;newCount:number;updated:number;maintained:number;missing:number;errors:number};
+export type DB={stock:Stock[];representatives:Representative[];treatments:Record<string,Treatment>;imports:ImportLog[];currentFile:string;updatedAt:string};
+const initial:DB={stock:[],representatives:initialRepresentatives,treatments:{},imports:[],currentFile:'',updatedAt:''};
+export const load=():DB=>{try{return{...initial,...JSON.parse(localStorage.getItem('expiry-dashboard:v1')||'{}')}}catch{return initial}};
+export const save=(db:DB)=>localStorage.setItem('expiry-dashboard:v1',JSON.stringify(db));
+export function mergeImport(db:DB,stock:Stock[],fileName:string,errors=0):DB{const old=new Map(db.stock.map(s=>[s.id,s]));let newCount=0,updated=0,maintained=0;for(const s of stock){const before=old.get(s.id);if(!before)newCount++;else if(JSON.stringify({...before,original:undefined})===JSON.stringify({...s,original:undefined}))maintained++;else updated++}const missing=db.stock.filter(s=>!stock.some(n=>n.id===s.id)).length;const now=new Date().toISOString();return{...db,stock,currentFile:fileName,updatedAt:now,imports:[{id:crypto.randomUUID(),fileName,date:now,records:stock.length,newCount,updated,maintained,missing,errors},...db.imports]}}
