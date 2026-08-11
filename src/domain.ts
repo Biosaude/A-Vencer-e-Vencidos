@@ -19,6 +19,7 @@ export type Stock = {
   loteFabricante: string;
   loteInterno: string;
   dataValidade: string;
+  validadeOriginal: string;
   quantidade: number;
   local: string;
   dataConferenciaEstoque: string;
@@ -61,23 +62,37 @@ export function parseMoney(value: unknown) {
 }
 
 export function parseDate(value: unknown): string {
-  if (value instanceof Date && !Number.isNaN(+value)) return localISO(value);
-  if (typeof value === 'number') return localISO(new Date(Date.UTC(1899, 11, 30) + value * 86400000));
+  if (value instanceof Date && !Number.isNaN(+value)) return utcISO(value);
+  if (typeof value === 'number') return utcISO(new Date(Date.UTC(1899, 11, 30) + value * 86400000));
   const normalized = normalizeText(value);
-  let match = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  let match = normalized.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (match) {
-    const date = new Date(+match[3], +match[2] - 1, +match[1]);
-    return date.getFullYear() === +match[3] && date.getMonth() === +match[2] - 1 && date.getDate() === +match[1] ? localISO(date) : '';
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    const year = Number(match[3]);
+    return isValidCivilDate(year, month, day) ? civilISO(year, month, day) : '';
+  }
+  match = normalized.match(/^(\d{1,2})\/(\d{4})$/);
+  if (match) {
+    const month = Number(match[1]);
+    const year = Number(match[2]);
+    if (month < 1 || month > 12) return '';
+    return civilISO(year, month, daysInMonth(year, month));
   }
   match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (match) {
-    const date = new Date(+match[1], +match[2] - 1, +match[3]);
-    return date.getFullYear() === +match[1] && date.getMonth() === +match[2] - 1 && date.getDate() === +match[3] ? localISO(date) : '';
+    const year = Number(match[1]); const month = Number(match[2]); const day = Number(match[3]);
+    return isValidCivilDate(year, month, day) ? civilISO(year, month, day) : '';
   }
   return '';
 }
 
-const localISO = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const civilISO = (year: number, month: number, day: number) => `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+const utcISO = (date: Date) => civilISO(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate());
+const daysInMonth = (year: number, month: number) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+const isValidCivilDate = (year: number, month: number, day: number) => year >= 1900 && month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+export function formatISODateToBrazilian(iso: string) { const match = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!match || !isValidCivilDate(Number(match[1]), Number(match[2]), Number(match[3]))) return '—'; return `${match[3]}/${match[2]}/${match[1]}`; }
+export const parseBrazilianDateToISO = parseDate;
 export function daysToExpire(iso: string, now = new Date()) { if (!iso) return Number.NaN; const [year, month, day] = iso.split('-').map(Number); return Math.ceil((Date.UTC(year, month - 1, day) - Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000); }
 export function band(days: number): Band { return days < 0 ? 'Vencido' : days <= 30 ? 'Até 30 dias' : days <= 60 ? '31–60 dias' : days <= 90 ? '61–90 dias' : days <= 180 ? '91–180 dias' : '+180 dias'; }
 export const isRisk = (stock: Stock, now = new Date()) => daysToExpire(stock.dataValidade, now) <= 90;
@@ -135,4 +150,4 @@ export function resolveRepresentative(material: ResolutionInput, representatives
     : { representante: 'Representante não identificado', representanteOrigem: 'NAO_IDENTIFICADO' as const, regraRepresentanteAplicada: null };
 }
 
-export const format = { money: (number: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(number || 0), number: (number: number) => new Intl.NumberFormat('pt-BR').format(number || 0), date: (date: string) => date ? date.split('-').reverse().join('/') : '—', percent: (number: number) => new Intl.NumberFormat('pt-BR', { style: 'percent', maximumFractionDigits: 1 }).format(number || 0) };
+export const format = { money: (number: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(number || 0), number: (number: number) => new Intl.NumberFormat('pt-BR').format(number || 0), date: formatISODateToBrazilian, percent: (number: number) => new Intl.NumberFormat('pt-BR', { style: 'percent', maximumFractionDigits: 1 }).format(number || 0) };

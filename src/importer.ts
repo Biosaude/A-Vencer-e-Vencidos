@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { normalizeLine, normalizeState, normalizeText, parseDate, parseMoney, resolveRepresentative, type Representative, type Stock, type StockOrigin } from './domain';
+import { formatISODateToBrazilian, normalizeLine, normalizeState, normalizeText, parseDate, parseMoney, resolveRepresentative, type Representative, type Stock, type StockOrigin } from './domain';
 
 const aliases: Record<string, keyof Stock> = {
   'produto': 'codigoProduto', 'codigo do produto': 'codigoProduto', 'código do produto': 'codigoProduto',
@@ -22,9 +22,11 @@ export type Preview = { fileName: string; origin: StockOrigin; columns: string[]
 
 export async function parseFile(file: File, representatives: Representative[], origin: StockOrigin): Promise<Preview> {
   const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array', cellDates: true, codepage: 65001 });
+  // cellDates=false is intentional: CSV date strings must never be coerced by
+  // SheetJS/JavaScript using the ambiguous US MM/DD/YYYY convention.
+  const workbook = XLSX.read(data, { type: 'array', cellDates: false, raw: true, codepage: 65001 });
   const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '' });
+  const raw = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: '', raw: true });
   const headerRow = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: '' })[0] || [];
   const columns = headerRow.map(String).filter((column) => column.trim() && raw.some((row) => normalizeText(row[column])));
   return normalizeRows(raw, representatives, origin, file.name, columns);
@@ -43,6 +45,11 @@ export function normalizeRows(raw: Record<string, unknown>[], representatives: R
     const marcaCodigo = marcaMatch?.[1] || '';
     const marcaNome = normalizeText(marcaMatch?.[2] || marca).toUpperCase();
     const line = normalizeLine(row.linha, row.topico, row.tipo, row.marca, row.descricaoProduto);
+    const validadeOriginalValue = row.dataValidade;
+    const dataValidade = parseDate(validadeOriginalValue);
+    const validadeOriginal = typeof validadeOriginalValue === 'string'
+      ? normalizeText(validadeOriginalValue)
+      : dataValidade ? formatISODateToBrazilian(dataValidade) : normalizeText(validadeOriginalValue);
     const base = {
       origemEstoque: origin,
       linha: line.linha,
@@ -57,7 +64,7 @@ export function normalizeRows(raw: Record<string, unknown>[], representatives: R
       codigoProduto: normalizeText(row.codigoProduto), descricaoProduto: normalizeText(row.descricaoProduto),
       marca, marcaCodigo, topico: normalizeText(row.topico), tipo: normalizeText(row.tipo),
       registroAnvisa: normalizeText(row.registroAnvisa), loteFabricante: normalizeText(row.loteFabricante), loteInterno: normalizeText(row.loteInterno),
-      dataValidade: parseDate(row.dataValidade), quantidade: parseMoney(row.quantidade), local: normalizeText(row.local),
+      dataValidade, validadeOriginal, quantidade: parseMoney(row.quantidade), local: normalizeText(row.local),
       dataConferenciaEstoque: parseDate(row.dataConferenciaEstoque), valorCompraLote: parseMoney(row.valorCompraLote) || 0,
       custoMedioAtual: parseMoney(row.custoMedioAtual), valorUltimaCompra: parseMoney(row.valorUltimaCompra) || 0,
       tipoDocumento: normalizeText(row.tipoDocumento), nomeCliente: normalizeText(row.nomeCliente), original: source,
@@ -66,6 +73,7 @@ export function normalizeRows(raw: Record<string, unknown>[], representatives: R
     const reasons: string[] = [];
     if (!stock.codigoProduto) reasons.push('Produto sem código');
     if (!stock.dataValidade) reasons.push('Validade inexistente ou inválida');
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(stock.validadeOriginal) && formatISODateToBrazilian(stock.dataValidade) !== stock.validadeOriginal.split('/').map((part, position) => position < 2 ? part.padStart(2, '0') : part).join('/')) reasons.push('Validade normalizada diverge do CSV');
     if (!Number.isFinite(stock.quantidade) || stock.quantidade < 0) reasons.push('Quantidade inválida');
     if (!Number.isFinite(stock.custoMedioAtual) || stock.custoMedioAtual < 0) reasons.push('Custo inválido');
     if (seen.has(stock.id)) { duplicates += 1; reasons.push('Possível duplicidade'); }
