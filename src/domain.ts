@@ -151,3 +151,14 @@ export function resolveRepresentative(material: ResolutionInput, representatives
 }
 
 export const format = { money: (number: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(number || 0), number: (number: number) => new Intl.NumberFormat('pt-BR').format(number || 0), date: formatISODateToBrazilian, percent: (number: number) => new Intl.NumberFormat('pt-BR', { style: 'percent', maximumFractionDigits: 1 }).format(number || 0) };
+export const formatCurrencyBRL = (value: number) => format.money(value);
+export function formatCompactCurrencyBRL(value: number) {
+  const absolute = Math.abs(value);
+  if (absolute < 1_000) return `R$ ${new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 }).format(value)}`;
+  const divisor = absolute >= 1_000_000 ? 1_000_000 : 1_000;
+  const suffix = absolute >= 1_000_000 ? 'mi' : 'mil';
+  const scaled = value / divisor;
+  const maximumFractionDigits = absolute >= 1_000_000 ? 2 : 1;
+  return `R$ ${new Intl.NumberFormat('pt-BR', { maximumFractionDigits }).format(scaled)} ${suffix}`;
+}
+export const formatPercent = (ratio: number) => new Intl.NumberFormat('pt-BR', { style: 'percent', maximumFractionDigits: 1 }).format(Number.isFinite(ratio) ? ratio : 0);
