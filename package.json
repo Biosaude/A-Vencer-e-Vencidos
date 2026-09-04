@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "start": "node server.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
