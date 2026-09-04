@@ -1,0 +1,7 @@
+{
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/:path*" },
+    { "source": "/share/:token", "destination": "/index.html" },
+    { "source": "/compartilhar/:token", "destination": "/index.html" }
+  ]
+}
